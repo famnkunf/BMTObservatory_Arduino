@@ -1,0 +1,9 @@
+{
+    "CodeGPT.apiKey": "CodeGPT Plus Beta",
+    "cmake.sourceDirectory": "G:/Other computers/My Computer/Projects/BMTObservatory/RemoteManagement/.pio/libdeps/nodemcu/ArduinoJson/src",
+    "C_Cpp.default.compilerPath": "D:\\Programs\\MinGW\\bin\\gcc.exe",
+    "files.associations": {
+        "*.cps": "javascript",
+        "*.tcc": "cpp"
+    }
+}
