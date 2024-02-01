@@ -10,6 +10,9 @@
 // #include <MultiStepper.h>
 #include <PCF8574.h>
 #include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
+#include <Servo.h>
 
 
 boolean setupWifi(const char* ssid, const char* password);
@@ -28,6 +31,7 @@ void checkWifi();
 void sioEvent(socketIOmessageType_t type, uint8_t * payload, size_t length);
 void controlRoof(bool status);
 void setupRoof();
+void readData();
 
 const char* payload = "[\"sensorData\",\"Hello from ESP8266!\"]";
 WiFiClient client;
@@ -49,16 +53,23 @@ int endIndex;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
 
-int temperature=27;
-int humidity=80;
+int temperature;
+int humidity;
+int pressure;
 bool rain=false;
 bool roofStatus=false;
 String data;
 
 // Side Motor
-const int dirPin1 = D7;
-const int stepPin1 =D6;
+const int dirPin2 = D7;
+const int stepPin2 =D6;
+const int dirPin1 = D4;
+const int stepPin1 = D5;
+const int servoPin = D3;
 AccelStepper stepper1(AccelStepper::DRIVER, stepPin1, dirPin1);
+AccelStepper stepper2(AccelStepper::DRIVER, stepPin2, dirPin2);
+Servo servo;
+const int speed = 200;
 
 // Roof motor
 // const int dirPin2 = D2;
@@ -72,6 +83,7 @@ PCF8574 expander(expanderAddress);
 PCF8574::DigitalInput exPinStatus;
 
 int rainSensorPin = 0;
+Adafruit_BME280 bme;
 
 const char* indexPage = R"=====(
 <!DOCTYPE html>
@@ -98,24 +110,52 @@ void setup() {
   Wire.begin();
   pinMode(dirPin1, OUTPUT);
   pinMode(stepPin1, OUTPUT);
+  pinMode(dirPin2, OUTPUT);
+  pinMode(stepPin2, OUTPUT);
+  pinMode(servoPin, OUTPUT);
+  expander.pinMode(P2, INPUT);
   stepper1.setMaxSpeed(5000);
   stepper1.setAcceleration(1000);
-  stepper1.setMinPulseWidth(500);
+  stepper1.setMinPulseWidth(100);
+  stepper2.setMaxSpeed(5000);
+  stepper2.setAcceleration(1000);
+  stepper2.setMinPulseWidth(100);
+  // servo.attach(servoPin);
   setupRoof();
+  while(!bme.begin(0x76)){
+    Serial.println("Could not find BME280 sensor!");
+    delay(1000);
+  }
+  temperature = bme.readTemperature();
+  humidity = bme.readHumidity();
+  pressure = bme.readPressure();
+  Serial.println("BME280 detected!");
   checkWifi();
   timeClient.begin();
   timeClient.setTimeOffset(25200); // Set time offset to GMT+7 (7 * 3600 seconds)
-  
-  
 }
 
 void loop() {
   server.handleClient();
   sio.loop();
 
-  if (millis() - lastMillis > 3000 && sio.isConnected() == true) {
+  if (millis() - lastMillis > 2000 && sio.isConnected() == true) {
     // sio.sendEVENT(payload);
     lastMillis = millis();
+    rain = expander.digitalRead(P2);
+    exPinStatus = expander.digitalReadAll();
+    Serial.print(exPinStatus.p0);
+    Serial.print(exPinStatus.p1);
+    Serial.print(exPinStatus.p2);
+    Serial.print(exPinStatus.p3);
+    Serial.print(exPinStatus.p4);
+    Serial.print(exPinStatus.p5);
+    Serial.print(exPinStatus.p6);
+    Serial.println(exPinStatus.p7);
+    if (rain == true && roofStatus == true){
+      roofStatus = false;
+      controlRoof(false);
+    }
   }
   timeClient.update();
 }
@@ -152,6 +192,7 @@ boolean setupWifi(const char* ssid, const char* password) {
   Serial.println(password);
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi ..");
+  Serial.println(WiFi.macAddress());
   int reconnectCounter = 0;
   while (WiFi.status() != WL_CONNECTED && reconnectCounter < 20) {
     Serial.print('.');
@@ -244,7 +285,8 @@ void sioEvent(socketIOmessageType_t type, uint8_t * payload, size_t length) {
       Serial.printf("Event name: %s\n", eventName.c_str());
       Serial.printf("Event data: %s\n", eventData.c_str());
       if (eventName == "requestData"){
-        data = "{\"temperature\":" + String(temperature) + ",\"humidity\":" + String(humidity) + ",\"rain\":" + String(rain) + ",\"roof\":" + String(roofStatus) + "}";
+        readData();
+        data = "{\"temperature\":" + String(temperature) + ",\"pressure\":" + String(pressure) + ",\"humidity\":" + String(humidity) + ",\"rain\":" + String(rain) + ",\"roof\":" + String(roofStatus) + "}";
         data = "[\"sensorData\"," + data + "]";
         sio.sendEVENT(data);
         Serial.println(data);
@@ -281,42 +323,89 @@ void sioEvent(socketIOmessageType_t type, uint8_t * payload, size_t length) {
 void controlRoof(bool status) {
   if (status == true) {
     Serial.println("Opening roof");
-    stepper1.setSpeed(250);
+    stepper1.setSpeed(speed);
+    lastMillis = millis();
     while (true){
-      if(expander.digitalRead(P1) == 1){
-        Serial.println("Roof opened");
-        break;
+      if (millis() - lastMillis > 200) {
+        lastMillis = millis();
+        if(expander.digitalRead(P1) == 1){
+          Serial.println("SideRoof opened");
+          break;
+        }
       }
       stepper1.runSpeed();
       yield();
    }
+   stepper2.setSpeed(speed);
+   lastMillis = millis();
+   while (true){
+      if (millis() - lastMillis > 200) {
+        lastMillis = millis();
+        if(expander.digitalRead(P3) == 1){
+          Serial.println("Roof opened");
+          break;
+        }
+      }
+      stepper2.runSpeed();
+      yield();
+   }
+   servo.write(90);
    sio.sendEVENT("[\"node.roofReady\", true]");
   } else {
     Serial.println("Closing roof");
-    stepper1.setSpeed(-250);
+    stepper1.setSpeed(-speed);
+    lastMillis = millis();
     while (true){
-      if (expander.digitalRead(P0) == 1){
-        Serial.println("Roof closed");
-        break;
+      if (millis() - lastMillis > 200) {
+        // sio.sendEVENT(payload);
+        lastMillis = millis();
+        if(expander.digitalRead(P0) == 1){
+          Serial.println("SideRoof closed");
+          break;
+        }
       }
       stepper1.runSpeed();
       yield();
     }
+    while (true)
+    {
+      if (millis() - lastMillis > 200) {
+        lastMillis = millis();
+        if(expander.digitalRead(P4) == 1){
+          Serial.println("Roof closed");
+          break;
+        }
+      }
+      stepper2.runSpeed();
+      yield();
+    }
+    servo.write(0);
     sio.sendEVENT("[\"node.roofReady\", false]");
   }
 }
 
 void readRain(){
-
+  rain = !expander.digitalRead(P2);
+  Serial.print("Rain: ");
+  Serial.print(rain);
 }
 
 void readTemperature(){
+  temperature = bme.readTemperature();
+  Serial.print("Temperature: ");
+  Serial.println(temperature);
 }
 
 void readHumidity(){
+  humidity = bme.readHumidity();
+  Serial.print("Humidity: ");
+  Serial.println(humidity);
 }
 
 void readPressure(){
+  pressure = bme.readPressure()/100;
+  Serial.print("Pressure: ");
+  Serial.println(pressure);
 }
 
 void setupRoof(){
@@ -324,19 +413,41 @@ void setupRoof(){
   expander.begin();
   expander.pinMode(P0, INPUT);
   expander.pinMode(P1, INPUT);
-  expander.pinMode(P2, INPUT);
   expander.pinMode(P3, INPUT);
+  expander.pinMode(P4, INPUT);
   exPinStatus = expander.digitalReadAll();
   if (exPinStatus.p0 == 0 && exPinStatus.p1 == 0 ){
-    stepper1.setSpeed(-250);
+    stepper1.setSpeed(-speed);
     while (true){
-      if (expander.digitalRead(P0) == 1){
-        Serial.println("Roof closed");
+      // exPinStatus = expander.digitalReadAll();
+      if (exPinStatus.p0 == 1){
+        Serial.println("SideRoof closed");
         break;
       }
       stepper1.runSpeed();
       yield();
     }
+  }
+  if (exPinStatus.p3 == 0 && exPinStatus.p4 == 0 ){
+    stepper2.setSpeed(speed);
+    while (true){
+      exPinStatus = expander.digitalReadAll();
+      if (exPinStatus.p3 == 1){
+        Serial.println("Roof closed");
+        break;
+      }
+      stepper2.runSpeed();
+      yield();
+    }
     roofStatus = false;
   }
+  servo.write(0);
+}
+
+
+void readData(){
+  readHumidity();
+  readTemperature();
+  readPressure();
+  readRain();
 }
